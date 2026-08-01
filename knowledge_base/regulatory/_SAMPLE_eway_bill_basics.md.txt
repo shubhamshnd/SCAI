@@ -1,0 +1,54 @@
+# E-Way Bill Requirements for Goods Movement in India
+
+> SAMPLE DOCUMENT — included to demonstrate and test the ingestion pipeline.
+> Verify every figure against the official GST portal before relying on it operationally.
+
+## When an e-way bill is required
+
+An e-way bill must be generated before the movement of goods where the consignment value exceeds
+Rs. 50,000. This applies to inter-state movement and, in most states, to intra-state movement above
+the same threshold. The consignment value is the invoice value including GST but excluding the value
+of exempt goods carried in the same conveyance.
+
+Movement covered includes supply, reasons other than supply (such as branch transfer or job work),
+and inward supply from an unregistered person.
+
+## Who generates it
+
+The registered person causing the movement generates Part A of the form. Where goods are handed to
+a transporter for movement by road, the transporter generates Part B with the vehicle number. If the
+supplier has not generated the e-way bill, the transporter carrying the consignment is required to
+do so.
+
+## Validity periods by distance
+
+Validity is calculated from the time Part B is first entered. For regular cargo, one day is allowed
+for every 200 km or part thereof. For over-dimensional cargo, one day is allowed for every 20 km or
+part thereof.
+
+A consignment moving 2,100 km by road therefore carries a validity of eleven days for regular cargo.
+Validity may be extended within eight hours before or after expiry where transit is delayed by
+exceptional circumstances such as natural calamity, law and order disruption, or vehicle breakdown.
+
+## Documents to carry
+
+The person in charge of the conveyance must carry the invoice or bill of supply or delivery challan,
+and a copy of the e-way bill number in physical or electronic form. For rail, air, or vessel
+movement, the e-way bill must be produced at the time of delivery rather than during transit.
+
+## Exemptions relevant to bulk commodities
+
+No e-way bill is required where goods are transported by a non-motorised conveyance, where goods
+move from a port, airport, air cargo complex, or land customs station to an inland container depot
+or container freight station for customs clearance, or where the goods are specified in the exempt
+annexure to the rules.
+
+## Steel and metals movement notes
+
+Steel long products such as TMT bars are commonly moved in full truck loads on multi-axle vehicles
+with payload in the range of 21 to 30 tonnes depending on axle configuration. Rail movement is
+usually economical only at rake-load quantities, which for most commodities requires approximately
+2,500 to 3,800 tonnes depending on wagon type and the commodity's loading density. Below rake load,
+road transport typically wins on both cost and door-to-door transit time despite a higher per-tonne
+kilometre rate, because part-rake rail movement incurs aggregation delay, terminal handling, and
+double handling at both ends.

@@ -1,0 +1,21 @@
+# Non-secret config. Secrets (GEMINI_API_KEY, etc.) live in .env — see design.md Section 5.1.
+
+llm:
+  generation:
+    provider: gemini
+    model: gemini-3.6-flash
+  embedding:
+    provider: gemini
+    model: gemini-embedding-001
+    dimensions: 768
+  fallback:
+    provider: ollama
+    model: llama3.1
+    base_url: http://localhost:11434
+
+db:
+  dsn: postgresql:///scai
+
+retrieval:
+  top_k: 5
+  similarity_threshold: 0.5

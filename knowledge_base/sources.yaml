@@ -1,0 +1,80 @@
+# Knowledge base manifest — the provenance record for what is in the RAG store.
+#
+# Rebuild the whole knowledge base with:
+#     python -m scai.ingest --manifest knowledge_base/sources.yaml --replace
+#
+# Every source here is a primary/official publisher (gov.in domains) or an official investment-
+# promotion body. Commercial aggregators and blogs are deliberately excluded: their figures are
+# frequently stale or wrong, and the agent cites whatever it retrieves.
+#
+# Each entry needs exactly one of `url` or `file`, plus `type`:
+#   regulatory | logistics_network | supplier | general
+# Optional: `title`, `region`, `category`.
+#
+# NOTE ON FRESHNESS: statutory thresholds (e-way bill limits, axle loads, duty rates) change.
+# Text ingested here is a snapshot from the ingest date. Re-run with --replace periodically, and
+# for anything legally binding treat the live portal as authoritative over this store.
+
+sources:
+  # ---- Regulatory: GST / e-way bill -------------------------------------------------
+  - url: https://docs.ewaybillgst.gov.in/html/faq.html
+    type: regulatory
+    title: E-Way Bill System — Official FAQ (NIC/GSTN)
+
+  - url: https://ewaybillgst.gov.in/
+    type: regulatory
+    title: E-Way Bill Portal — Current Notices and Advisories
+
+  # ---- Regulatory: road transport ---------------------------------------------------
+  - url: https://www.pib.gov.in/Pressreleaseshare.aspx?PRID=1538941
+    type: regulatory
+    title: MoRTH Notification — Increase in Truck Axle Load Limits (2018)
+
+  # ---- Regulatory: customs / foreign trade ------------------------------------------
+  - url: https://content.dgft.gov.in/Website/CIEP.pdf
+    type: regulatory
+    title: Customs Import & Export Procedures (DGFT)
+
+  # ---- Logistics network: national policy -------------------------------------------
+  - url: https://www.pib.gov.in/PressReleasePage.aspx?PRID=2167224
+    type: logistics_network
+    title: Three Years of the National Logistics Policy (PIB, 2025)
+
+  - url: https://www.pmindia.gov.in/en/news_updates/pm-launches-national-logistics-policy/
+    type: logistics_network
+    title: Launch of the National Logistics Policy (PMO, 2022)
+
+  - url: https://www.investindia.gov.in/team-india-blogs/national-logistics-policy-india
+    type: logistics_network
+    title: National Logistics Policy — Overview (Invest India)
+
+  # ---- Logistics network: maritime / coastal ----------------------------------------
+  # sagarmala.gov.in was unreachable (connection timeout) when this manifest was built on
+  # 2026-08-01 — verified with curl, so it is the host, not the loader. Uncomment and re-run
+  # once the site is back; the maritime/coastal coverage below is thinner without it.
+  # - url: https://sagarmala.gov.in/about-sagarmala/introduction
+  #   type: logistics_network
+  #   title: Sagarmala Programme — Introduction (Ministry of Ports, Shipping and Waterways)
+  #
+  # - url: https://sagarmala.gov.in/coastal-shipping
+  #   type: logistics_network
+  #   title: Coastal Shipping under Sagarmala
+
+  - url: https://www.investindia.gov.in/sector/ports-shipping
+    type: logistics_network
+    title: Ports and Shipping Sector Overview (Invest India)
+
+  # ---- Logistics network: rail ------------------------------------------------------
+  - url: https://indianrailways.gov.in/railwayboard/view_section.jsp?lang=0&id=0,1,304,366,555,860
+    type: logistics_network
+    title: Indian Railways — Classification of Commodities (Goods Tariff)
+
+  # ---- Local files ------------------------------------------------------------------
+  # Add your own PDFs/markdown here, e.g.:
+  #   - file: knowledge_base/supplier/vendor_capability_2026.pdf
+  #     type: supplier
+  #
+  # The former eway_bill_basics.md sample is deliberately NOT ingested. It was written to
+  # exercise the pipeline, and in testing it outranked the official NIC/GSTN FAQ for e-way bill
+  # queries — model-written prose competing with a primary source is exactly the failure mode
+  # this knowledge base exists to prevent.

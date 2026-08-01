@@ -14,7 +14,7 @@
 **Key technical commitments:**
 - Postgres + pgvector as the single datastore for both RAG embeddings and structured domain data (SKU master, HSN mapping, supplier directory, logistics network reference)
 - LangGraph for agent orchestration — explicit state graph so the "always clarify missing fields" rule is enforced structurally, not just prompted
-- LLM-provider-agnostic: Gemini and Groq wired up first (free tiers), OpenAI and Anthropic supported via the same interface
+- LLM-provider-agnostic: Gemini is the active provider for v1 (both generation and embeddings — see Section 5 for exact models), with Ollama wired in as a local/offline fallback; Groq, OpenAI, and Anthropic adapters follow the same interface and can be enabled by config alone
 - Tools: web search, real-time commodity/material pricing APIs, distance/routing (OSRM), chart generation, Leaflet-based map export
 
 ## 2. Architecture
@@ -76,7 +76,7 @@ document_chunks(
   id UUID PK,
   document_id UUID FK -> documents,
   chunk_text TEXT,
-  embedding VECTOR(N),      -- N per chosen embedding model
+  embedding VECTOR(768),    -- 768 = Gemini gemini-embedding-001 output, truncated (Matryoshka) from its native 3072 dims
   chunk_index INT
 )
 -- HNSW or IVFFlat index on embedding
@@ -176,17 +176,34 @@ A single `LLMProvider` interface (`generate(messages, tools, **kwargs) -> respon
 
 ```
 providers/
-  gemini_provider.py    # default — free tier
-  groq_provider.py      # default — free tier, fast inference
-  openai_provider.py    # supported, not default
-  anthropic_provider.py # supported, not default
+  gemini_provider.py    # active — generation + embeddings
+  ollama_provider.py    # active — local fallback (offline dev, no API key needed)
+  groq_provider.py      # supported, not configured
+  openai_provider.py    # supported, not configured
+  anthropic_provider.py # supported, not configured
 ```
 
-Config (env var or config file) picks the active provider and a fallback order, e.g. `primary: groq, fallback: [gemini, openai]`. On rate-limit or error from the primary, the router retries with the next provider in the chain — important given free-tier rate limits on Gemini/Groq.
+Config (env var or config file) picks the active provider and a fallback order, e.g. `primary: gemini, fallback: [ollama]`. On rate-limit or error from the primary, the router retries with the next provider in the chain.
 
 Tool-calling format differs slightly per provider (OpenAI-style function calling vs Anthropic tool_use vs Gemini function declarations) — the adapter layer normalizes LangGraph's tool schema into each provider's expected format on the way in, and normalizes the response back into a common `ToolCall` structure on the way out. This is the main complexity cost of multi-provider support; it's isolated entirely inside the adapters so the LangGraph graph logic stays provider-agnostic.
 
-Embedding model for pgvector is chosen independently of the chat LLM (e.g. a free/open embedding model run locally, or via whichever provider offers a stable embeddings endpoint) and set as a config value — not hardcoded to one provider, since Groq and Anthropic don't offer embeddings natively.
+### 5.1 Active model configuration (v1)
+
+Both roles run on Gemini for v1 — one provider, one API key, simplest setup. Config lives in `config.yaml` (checked in, no secrets) layered with `.env` (gitignored, holds keys); env vars override file values.
+
+| Role | Config key | Default value | Notes |
+|---|---|---|---|
+| Generation | `llm.generation.provider` | `gemini` | Chat/reasoning/tool-calling model driving the LangGraph graph |
+| Generation | `llm.generation.model` | `gemini-3.6-flash` | Current GA flash model; `gemini-2.5-flash` also works but is being retired Oct 2026 — don't build new default configs against it |
+| Embedding | `llm.embedding.provider` | `gemini` | Used only at ingest time and query time for pgvector similarity search |
+| Embedding | `llm.embedding.model` | `gemini-embedding-001` | GA text embedding model |
+| Embedding | `llm.embedding.dimensions` | `768` | Truncated from the model's native 3072 via the API's `output_dimensionality` param (Matryoshka representation — truncating loses little quality and keeps the HNSW index smaller/faster). Must match `document_chunks.embedding VECTOR(768)` in Section 3 exactly |
+| Fallback | `llm.fallback.provider` | `ollama` | Local, no API key — used if Gemini errors/rate-limits. Requires a model pulled locally (e.g. `ollama pull llama3.1`); not pulled yet in this environment |
+| Fallback | `llm.fallback.base_url` | `http://localhost:11434` | Ollama's default local endpoint |
+
+**Embeddings are not part of the generation fallback chain.** Switching embedding provider/model changes the vector space, so every existing `document_chunks` row would need re-embedding — this is a deliberate, explicit migration, never an automatic runtime fallback. If Ollama is ever promoted to the embedding role (e.g. `nomic-embed-text`, 768-dim — a coincidental dimension match with the current Gemini default, not a guarantee for other Ollama embedding models), the whole corpus must be re-embedded and the `VECTOR(N)` column width re-verified.
+
+`GEMINI_API_KEY` is read from `.env` (already present in this project). `OLLAMA_BASE_URL` is optional and only needed if Ollama runs somewhere other than localhost:11434.
 
 ## 6. Output & Export Handling
 
@@ -211,6 +228,106 @@ Every response that includes a visual produces a file under a session-scoped out
 
 - **Deployment**: single-org internal tool — one Postgres instance (with pgvector extension enabled), no tenant isolation needed. Simple auth (SSO or basic login) at the app layer, not modeled in the schema for v1.
 - **Extensibility hooks left in the design**: language layer is pluggable (translation/detection step could sit before `parse_intent` without touching the rest of the graph); LLM provider layer already supports adding providers without graph changes; new price-fetcher sources slot into the `price_tools` registry by category; new document types slot into `documents.source_type` without schema changes.
+
+## 9A. Data Sources — what actually makes the agent smart
+
+The model supplies reasoning; the *data* supplies the expertise. With an empty database the agent can only produce plausible-sounding generalities. Sources below are ordered by impact per unit of effort.
+
+### Tier 1 — internal data (highest impact, only you have it)
+
+| Data | Table | Why it matters |
+|---|---|---|
+| SKU/HSN master | `sku_master` | Without it, no SKU resolves to a material, so the price router always falls through to `default` and every answer is generic. This is the single highest-value import. |
+| Supplier directory | `suppliers` | Enables "who can supply X near Y" — the questions a procurement manager actually asks. Needs lat/lon to support proximity and map output. |
+| Historical rate cards / past PO data | *(new table)* | The strongest possible grounding: what *you* actually paid per lane and per material. Turns "market rate is ~₹55k/t" into "you paid ₹52.3k/t on this lane last quarter." Not in the v1 schema — worth adding. |
+| Plant/warehouse locations | `logistics_nodes` | Lets origin/destination resolve to your own network rather than raw city geocoding. |
+
+### Tier 2 — public reference data (free, bulk-loadable)
+
+- **Indian Railways freight tariff & rake data** (Freight Operations Information System, IR published tariffs) → fills `transport_benchmarks` for rail, the mode currently unsupported by live routing.
+- **Major/minor port distances & turnaround times** (Sagarmala, IPA port statistics) → sea leg benchmarks.
+- **Agmarknet / eNAM daily mandi prices** — bulk CSV downloads, genuinely free, ideal for agri categories.
+- **CBIC HSN/GST rate tables + customs tariff** → grounds duty and tax questions, which are pure regulatory lookups where hallucination is most costly.
+- **E-way bill rules, state border/checkpost regulations** (GST portal circulars) → the compliance questions that block shipments in practice.
+- **India Post / OSM administrative boundaries + pincode-to-district mapping** → disambiguates the "Chennai matches 2 nodes" case in the clarify loop.
+
+### Tier 3 — commercial/licensed (highest fidelity, paid)
+
+SteelMint / BigMint, JPC (Joint Plant Committee) for steel; MCX/LME for metals; ICIS or Platts for chemicals and polymers. These are what turn the price tool from "web snippets with a caveat" into a benchmark rate you can quote in a negotiation. Each slots into the `price_tools` registry by category without touching the graph.
+
+### Building the knowledge base (implemented)
+
+`scai/ingest.py` is the load → chunk → embed → store pipeline. Run it from the project root with the venv active:
+
+```bash
+# one file
+python -m scai.ingest --file docs/eway_rules.pdf --type regulatory --title "E-Way Bill Rules"
+
+# a directory, recursively (.pdf/.txt/.md); title inferred per file
+python -m scai.ingest --dir knowledge_base/regulatory --type regulatory
+
+# a web page
+python -m scai.ingest --url https://example.gov.in/circular --type regulatory --title "Circular 12/2026"
+
+# optional retrieval filters, and overwriting a previous ingest of the same source
+... --region Maharashtra --category steel --replace
+```
+
+`--type` is one of `regulatory | logistics_network | supplier | general` and maps to `documents.source_type`; `--region`/`--category` populate the metadata columns the retriever filters on.
+
+Behaviour worth knowing:
+- **Chunking** splits on paragraph boundaries toward a ~1200-char target with 150-char overlap, so a fact straddling a boundary stays retrievable from either side. Oversized paragraphs are hard-split rather than allowed to blow past the target.
+- **Re-ingesting the same source is refused** unless `--replace` is passed — an accidental double ingest would otherwise silently double that document's weight in every future retrieval. `--replace` deletes the old row and its chunks cascade with it.
+- **Embedding is batched** (32 chunks/request) against the model in §5.1, and one failed file does not abort the rest of a directory run.
+- **Scanned PDFs produce no text** and fail loudly with a message pointing at OCR — they need an OCR pass before ingestion.
+
+**The manifest is the provenance record.** `knowledge_base/sources.yaml` lists every ingested source with its type and title; rebuild the whole store with one command:
+
+```bash
+python -m scai.ingest --manifest knowledge_base/sources.yaml --replace
+```
+
+Currently ingested (152 chunks across 9 sources, all primary/official publishers):
+
+| Area | Source | Type |
+|---|---|---|
+| GST / e-way bill | NIC-GSTN official FAQ + portal advisories | `regulatory` |
+| Road transport | MoRTH axle-load / GVW notification (PIB) | `regulatory` |
+| Customs & trade | DGFT *Customs Import & Export Procedures* (PDF) | `regulatory` |
+| National policy | National Logistics Policy — PIB, PMO, Invest India | `logistics_network` |
+| Maritime | Ports & shipping sector overview (Invest India) | `logistics_network` |
+| Rail | Indian Railways commodity classification | `logistics_network` |
+
+Selection rule: **primary publishers only** (`gov.in` domains and official promotion bodies). Commercial aggregators and SEO blogs are excluded — their figures are frequently stale or wrong, and the agent cites whatever it retrieves. Two lessons learned the hard way while building this are worth preserving:
+
+- **Never ingest model-written prose.** A sample document written to test the pipeline outranked the official NIC/GSTN FAQ (0.796 vs 0.761) for e-way bill queries. Synthetic content competing with primary sources defeats the purpose of grounding; it was removed from the manifest.
+- **Freshness is not automatic.** Statutory thresholds change. Ingested text is a snapshot from its ingest date — re-run with `--replace` periodically, and treat the live portal as authoritative for anything legally binding. This is exactly why regulatory/tariff queries also route to live web search (§9B).
+
+Recommended layout, one subdirectory per `source_type`, so each can be ingested with the right flag:
+
+```
+knowledge_base/
+  regulatory/        # GST circulars, e-way bill rules, customs tariff notes
+  logistics_network/ # rail tariffs, port handbooks, corridor studies
+  supplier/          # supplier profiles, certifications, capability docs
+```
+
+A sample document (`knowledge_base/regulatory/eway_bill_basics.md`) is included to exercise the pipeline; it is marked as sample data and should be replaced with authoritative sources before operational use.
+
+### What goes in RAG vs. what goes in tables
+
+The split matters: **prose goes in `documents`/`document_chunks`** (regulations, circulars, policy PDFs, supplier certifications — anything you'd want to quote or cite). **Numbers go in structured tables** (prices, distances, transit times, capacities). Embedding a rate card is a common and expensive mistake — vector similarity retrieves *approximately*, and an approximately-correct freight rate is worse than none.
+
+## 9B. Web Search Integration
+
+Implemented in `scai/tools/web_search.py` using **Tavily** — chosen over raw scraping or a generic search API because it returns clean, LLM-ready snippets with source URLs, needs no HTML parsing, and has a usable free tier. Requires `TAVILY_API_KEY` in `.env`.
+
+It serves two distinct roles:
+
+1. **Price fallback** (`scai/tools/pricing.py`) — every category currently resolves here, since no licensed price feed is wired up. Results are returned with an explicit `caveat` field marking them as unstructured web data rather than a benchmark rate, so the synthesis prompt cites them with a source instead of asserting them as settled fact.
+2. **Live regulatory/news lookup** — `select_tools` routes queries mentioning regulation, GST, e-way bills, duty, tariffs, compliance, or "latest" to web search directly, because this class of information changes faster than any ingested corpus and a stale RAG answer is actively harmful.
+
+Failures degrade rather than propagate: a missing key or empty result raises `ToolUnavailableError`, which `call_tools` catches and passes to the LLM as an `error` field. The agent then says the live lookup failed and falls back to labelled general knowledge (design.md Section 7), instead of silently inventing a number.
 
 ## 10. UI/UX Design System
 
